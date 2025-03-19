@@ -91,26 +91,34 @@ impl RunningEditor {
                 (event::KeyCode::Char('i'), Mode::Normal) => self.mode = Mode::Insert,
                 (event::KeyCode::Char('a'), Mode::Normal) => {
                     self.mode = Mode::Insert;
-                    let buf = &self.buffers[self.cur_buf];
                     self.move_cursor_right();
+                    self.mark_dirty();
                 }
                 (event::KeyCode::Char('j'), Mode::Normal) => {
                     if self.move_cursor_down() {
+                        self.check_scroll_down();
+                        self.check_scroll_left();
+                        self.check_scroll_right();
                         self.mark_dirty();
                     }
                 }
                 (event::KeyCode::Char('k'), Mode::Normal) => {
                     if self.move_cursor_up() {
+                        self.check_scroll_up();
+                        self.check_scroll_left();
+                        self.check_scroll_right();
                         self.mark_dirty();
                     }
                 }
                 (event::KeyCode::Char('h'), Mode::Normal) => {
                     if self.move_cursor_left() {
+                        self.check_scroll_left();
                         self.mark_dirty();
                     }
                 }
                 (event::KeyCode::Char('l'), Mode::Normal) => {
                     if self.move_cursor_right() {
+                        self.check_scroll_right();
                         self.mark_dirty();
                     }
                 }
@@ -123,6 +131,19 @@ impl RunningEditor {
                     self.cursor.0 = 0;
                     self.wanted_col = 0;
                     self.mark_dirty();
+                }
+                (event::KeyCode::Backspace, Mode::Insert) => {
+                    let (cursor_x, cursor_y) = self.cursor;
+                    if cursor_x > 0 || cursor_y > 0 {
+                        let cur = self.cur_buf;
+                        let buf = &mut self.buffers[cur];
+                        buf.remove(cursor_x, cursor_y);
+                        if self.move_cursor_left_wrapping() {
+                            self.check_scroll_up();
+                            self.check_scroll_left();
+                            self.check_scroll_right();
+                        }
+                    }
                 }
                 (event::KeyCode::Char(c), Mode::Insert) => {
                     let cur = self.cur_buf;
@@ -148,14 +169,10 @@ impl RunningEditor {
     fn move_cursor_up(&mut self) -> bool {
         if self.cursor.1 > 0 {
             self.cursor.1 -= 1;
+
             let buf = &self.buffers[self.cur_buf];
             let row_len = buf.row_len(self.cursor.1);
             self.cursor.0 = self.wanted_col.min(row_len.checked_sub(1).unwrap_or(0));
-
-            self.check_scroll_up();
-            self.check_scroll_left();
-            self.check_scroll_right();
-
             return true;
         }
         false
@@ -168,11 +185,6 @@ impl RunningEditor {
             self.cursor.1 += 1;
             let row_len = buf.row_len(self.cursor.1);
             self.cursor.0 = self.wanted_col.min(row_len.checked_sub(1).unwrap_or(0));
-
-            self.check_scroll_down();
-            self.check_scroll_left();
-            self.check_scroll_right();
-
             return true;
         }
         false
@@ -182,11 +194,9 @@ impl RunningEditor {
         if self.cursor.0 > 0 {
             self.cursor.0 -= 1;
             self.wanted_col = self.cursor.0;
-
-            self.check_scroll_left();
-
             return true;
         }
+        self.wanted_col = self.cursor.0;
         false
     }
 
@@ -196,12 +206,26 @@ impl RunningEditor {
         if self.cursor.0 < row_len - 1 {
             self.cursor.0 += 1;
             self.wanted_col = self.cursor.0;
-
-            self.check_scroll_right();
-
             return true;
         }
         false
+    }
+
+    fn move_cursor_left_wrapping(&mut self) -> bool {
+        if self.move_cursor_left() {
+            return true;
+        }
+        if self.cursor.1 == 0 {
+            return false;
+        }
+        let buf = &self.buffers[self.cur_buf];
+        self.cursor.1 -= 1;
+
+        let row_len = buf.row_len(self.cursor.1);
+        self.cursor.0 = row_len
+            .checked_sub(if self.mode == Mode::Insert { 0 } else { 1 })
+            .unwrap_or(0);
+        true
     }
 
     fn check_scroll_up(&mut self) {
