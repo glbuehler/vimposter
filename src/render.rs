@@ -43,20 +43,12 @@ pub(crate) fn spawn_render_thread() -> mpsc::Sender<RenderInfo> {
     let (s, recv) = mpsc::channel::<RenderInfo>();
     thread::spawn(move || {
         for info in recv.into_iter() {
-            let mut render_buf: Vec<u8>;
             let (w, h) = info.window_size;
             let (scroll_x, scroll_y) = info.scroll;
             let (cursor_x, cursor_y) = (info.cursor.0 - scroll_x, info.cursor.1 - scroll_y);
-            let set = Vec::from(SET_CURSOR!(cursor_x, cursor_y));
+            let set_cursor = Vec::from(SET_CURSOR!(cursor_x, cursor_y));
 
-            render_buf = Vec::with_capacity(
-                w * h
-                    + NORMAL_CURSOR.len()
-                    + CURSOR_HIDE.len()
-                    + CURSOR_SHOW.len()
-                    + SET_00.len()
-                    + set.len(),
-            );
+            let mut render_buf = Vec::with_capacity(w * h);
             render_buf.extend(match info.mode {
                 editor::Mode::Normal => NORMAL_CURSOR,
                 editor::Mode::Insert => INSERT_CURSOR,
@@ -64,30 +56,9 @@ pub(crate) fn spawn_render_thread() -> mpsc::Sender<RenderInfo> {
             render_buf.extend(CURSOR_HIDE);
             render_buf.extend(SET_00);
 
-            let mut line_count = 0;
-            for l in info.buf.content.lines().skip(scroll_y).take(h) {
-                let mut l = match l.char_indices().nth(scroll_x).map(|(i, _)| i) {
-                    Some(n) => l.get(n..).unwrap(),
-                    None => "",
-                };
-                let llen = l.chars().count();
-                if llen > w {
-                    let wc = l.char_indices().nth(w).unwrap().0;
-                    l = l.get(..wc).unwrap();
-                }
-                let padding = w - l.chars().count();
-                render_buf.extend(l.as_bytes());
-                render_buf.extend(iter::repeat_n(b' ', padding));
-                render_buf.extend(b"\r\n");
-                line_count += 1;
-            }
+            write_buf_content(&mut render_buf, &info.buf, scroll_x, scroll_y, w, h);
 
-            for _ in 0..info.window_size.1 - line_count {
-                render_buf.extend(vec![b' '; info.window_size.0]);
-                render_buf.extend(b"\r\n");
-            }
-            render_buf.pop();
-            render_buf.extend(set);
+            render_buf.extend(set_cursor);
             render_buf.extend(CURSOR_SHOW);
 
             if let Err(e) = io::stdout().write_all(&render_buf) {
@@ -99,4 +70,38 @@ pub(crate) fn spawn_render_thread() -> mpsc::Sender<RenderInfo> {
         }
     });
     s
+}
+
+fn write_buf_content(
+    render_buf: &mut Vec<u8>,
+    buf: &buffer::Buffer,
+    scroll_x: usize,
+    scroll_y: usize,
+    window_x: usize,
+    window_y: usize,
+) {
+    let mut y_padding = window_y;
+    for l in buf.content.lines().skip(scroll_y).take(window_y) {
+        let start = l.char_indices().nth(scroll_x).map(|(i, _)| i).unwrap_or(0);
+        let l = &l[start..];
+        let end = l
+            .char_indices()
+            .nth(scroll_x + window_x)
+            .map(|(i, _)| i)
+            .unwrap_or(l.len());
+        let l = &l[..end];
+        let line_padding = window_x - l.chars().count();
+        render_buf.extend(l.as_bytes());
+        render_buf.extend(iter::repeat_n(b' ', line_padding));
+        render_buf.extend(b"\r\n");
+
+        y_padding -= 1;
+    }
+
+    for _ in 0..y_padding {
+        render_buf.extend(vec![b' '; window_x]);
+        render_buf.extend(b"\r\n");
+    }
+    render_buf.pop();
+    render_buf.pop();
 }
