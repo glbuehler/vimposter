@@ -14,32 +14,36 @@ impl Cursor {
         if self.row > 0 {
             self.row -= 1;
             self.col = self.wanted_col.min(row_len.checked_sub(1).unwrap_or(0));
+            return true;
         }
-        self.row > 0
+        false
     }
 
     pub fn move_right(&mut self, row_len: usize) -> bool {
         if self.col + 1 < row_len {
             self.col += 1;
             self.wanted_col = self.col;
+            return true;
         }
-        self.col + 1 < row_len
+        false
     }
 
     pub fn move_down(&mut self, row_len: usize, num_rows: usize) -> bool {
         if self.row + 1 < num_rows {
             self.row += 1;
             self.col = self.wanted_col.min(row_len.checked_sub(1).unwrap_or(0));
+            return true;
         }
-        self.row + 1 < num_rows
+        false
     }
 
     pub fn move_left(&mut self) -> bool {
         if self.col > 0 {
             self.col -= 1;
             self.wanted_col = self.col;
+            return true;
         }
-        self.col > 0
+        false
     }
 
     pub fn relative_to(&self, x: usize, y: usize) -> (usize, usize) {

@@ -9,6 +9,12 @@ use crate::{buffer, cursor, input, render};
 
 const MAX_RENDER_DELAY: time::Duration = time::Duration::from_millis(50);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    Normal,
+    Insert,
+}
+
 #[derive(Debug)]
 pub struct RunningEditor {
     pub running: bool,
@@ -18,6 +24,7 @@ pub struct RunningEditor {
     pub window_size: (usize, usize),
     pub scroll: (usize, usize),
     pub screen_dirty: bool,
+    pub mode: Mode,
 }
 
 impl RunningEditor {
@@ -36,6 +43,7 @@ impl RunningEditor {
             window_size,
             cursor: Default::default(),
             scroll: (0, 0),
+            mode: Mode::Normal,
         }
     }
 
@@ -77,77 +85,94 @@ impl RunningEditor {
 
     fn handle_input(self_arc: &Arc<RwLock<Self>>, e: event::Event) {
         const W_LOCK_FAIL: &str = "unable to acquire write lock";
-        match e {
-            event::Event::Key(event::KeyEvent {
-                code: event::KeyCode::Esc,
-                ..
-            }) => {
-                self_arc.write().expect(W_LOCK_FAIL).running = false;
-            }
-            event::Event::Resize(w, h) => {
-                self_arc.write().expect(W_LOCK_FAIL).window_size = (w as usize, h as usize)
-            }
-            event::Event::Key(event::KeyEvent {
-                code: event::KeyCode::Char('j'),
-                ..
-            }) => {
-                let mut w = self_arc.write().expect(W_LOCK_FAIL);
-                let buf = &w.buffers[w.cur_buf];
-                let row_len = buf.row_len(w.cursor.row + 1).unwrap_or(0);
-                let num_rows = buf.num_rows();
-                if w.cursor.move_down(row_len, num_rows) {
-                    if w.cursor.row - w.scroll.1 >= w.window_size.1 {
-                        w.scroll.1 = w.cursor.row - w.window_size.1;
+        let mut w = self_arc.write().expect(W_LOCK_FAIL);
+        match (e, w.mode.clone()) {
+            (event::Event::Key(event::KeyEvent { code, .. }), m) => match (code, m) {
+                (event::KeyCode::Esc, Mode::Normal) => w.running = false,
+                (event::KeyCode::Esc, Mode::Insert) => {
+                    w.mode = Mode::Normal;
+                    let buf = &w.buffers[w.cur_buf];
+                    let row_len = buf.row_len(w.cursor.row);
+                    if w.cursor.col >= row_len {
+                        w.cursor.col = row_len.checked_sub(1).unwrap_or(0);
                     }
+                }
+                (event::KeyCode::Char('i'), Mode::Normal) => w.mode = Mode::Insert,
+                (event::KeyCode::Char('a'), Mode::Normal) => {
+                    w.mode = Mode::Insert;
+                    let buf = &w.buffers[w.cur_buf];
+                    let row_len = buf.row_len(w.cursor.row);
+                    w.cursor.move_right(row_len + 1);
+                }
+                (event::KeyCode::Char('j'), Mode::Normal) => {
+                    let buf = &w.buffers[w.cur_buf];
+                    let num_rows = buf.num_rows();
+                    let row_len = if w.cursor.row + 1 < num_rows {
+                        buf.row_len(w.cursor.row + 1)
+                    } else {
+                        0
+                    };
+                    if w.cursor.move_down(row_len, num_rows) {
+                        if w.cursor.row - w.scroll.1 >= w.window_size.1 {
+                            w.scroll.1 = w.cursor.row - w.window_size.1 + 1;
+                        }
+                        w.mark_dirty();
+                    }
+                }
+                (event::KeyCode::Char('k'), Mode::Normal) => {
+                    let buf = &w.buffers[w.cur_buf];
+                    let row_len = if w.cursor.row == 0 {
+                        0
+                    } else {
+                        buf.row_len(w.cursor.row - 1)
+                    };
+                    if w.cursor.move_up(row_len) {
+                        if w.cursor.row < w.scroll.1 {
+                            w.scroll.1 = w.cursor.row;
+                        }
+                        w.mark_dirty();
+                    }
+                }
+                (event::KeyCode::Char('h'), Mode::Normal) => {
+                    if w.cursor.move_left() {
+                        if w.cursor.col < w.scroll.0 {
+                            w.scroll.0 = w.cursor.col;
+                        }
+                        w.mark_dirty();
+                    }
+                }
+                (event::KeyCode::Char('l'), Mode::Normal) => {
+                    let buf = &w.buffers[w.cur_buf];
+                    let row_len = buf.row_len(w.cursor.row);
+                    if w.cursor.move_right(row_len) {
+                        if w.cursor.col - w.scroll.0 > w.window_size.0 {
+                            w.scroll.0 = w.cursor.col - w.window_size.0 + 1;
+                        }
+                        w.mark_dirty();
+                    }
+                }
+                (event::KeyCode::Enter, Mode::Insert) => {
+                    let cur = w.cur_buf;
+                    let (col, row) = (w.cursor.col, w.cursor.row);
+                    let buf = &mut w.buffers[cur];
+                    buf.insert(col, row, '\n');
+                    let num_rows = buf.num_rows();
+                    w.cursor.move_down(0, num_rows);
                     w.mark_dirty();
                 }
-            }
-            event::Event::Key(event::KeyEvent {
-                code: event::KeyCode::Char('k'),
-                ..
-            }) => {
-                let mut w = self_arc.write().expect(W_LOCK_FAIL);
-                let buf = &w.buffers[w.cur_buf];
-                let row_len = if w.cursor.row == 0 {
-                    0
-                } else {
-                    buf.row_len(w.cursor.row - 1).unwrap_or(0)
-                };
-                if w.cursor.move_up(row_len) {
-                    if w.cursor.row < w.scroll.1 {
-                        w.scroll.1 = w.cursor.row;
-                    }
+                (event::KeyCode::Char(c), Mode::Insert) => {
+                    let cur = w.cur_buf;
+                    let (col, row) = (w.cursor.col, w.cursor.row);
+                    let buf = &mut w.buffers[cur];
+                    buf.insert(col, row, c);
+                    let row_len = buf.row_len(row);
+                    w.cursor.move_right(row_len + 1);
                     w.mark_dirty();
                 }
-            }
-            event::Event::Key(event::KeyEvent {
-                code: event::KeyCode::Char('h'),
-                ..
-            }) => {
-                let mut w = self_arc.write().expect(W_LOCK_FAIL);
-                if w.cursor.move_left() {
-                    if w.cursor.col < w.scroll.0 {
-                        w.scroll.0 = w.cursor.col;
-                    }
-                    w.mark_dirty();
-                }
-            }
-            event::Event::Key(event::KeyEvent {
-                code: event::KeyCode::Char('l'),
-                ..
-            }) => {
-                let mut w = self_arc.write().expect(W_LOCK_FAIL);
-                let buf = &w.buffers[w.cur_buf];
-                let row_len = buf.row_len(w.cursor.row).unwrap_or(0);
-                if w.cursor.move_right(row_len) {
-                    if w.cursor.col - w.scroll.0 > w.window_size.0 {
-                        w.scroll.0 = w.cursor.col - w.window_size.0 - 1;
-                    }
-                    w.mark_dirty();
-                }
-            }
-            event::Event::Key(kev) => {
-                self_arc.write().expect(W_LOCK_FAIL).screen_dirty = true;
+                _ => (),
+            },
+            (event::Event::Resize(width, height), _) => {
+                w.window_size = (width as usize, height as usize)
             }
             _ => (),
         }
