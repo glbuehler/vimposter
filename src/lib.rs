@@ -4,7 +4,6 @@ use crossterm::{execute, terminal};
 use editor::RunningEditor;
 
 mod buffer;
-mod cursor;
 mod editor;
 mod input;
 mod render;
